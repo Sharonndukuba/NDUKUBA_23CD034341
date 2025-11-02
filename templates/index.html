@@ -1,10 +1,224 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Title</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Emotion Detector</title>
+  <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
+  <main class="card" aria-labelledby="title">
+    <h1 id="title">Emotion Detector</h1>
 
+    <div class="media-area">
+      <!-- segmented control -->
+      <div class="segmented" role="tablist" aria-label="Input source">
+        <button class="segmented-btn active" id="tab-live" role="tab" aria-selected="true">Live Camera</button>
+        <button class="segmented-btn" id="tab-upload" role="tab" aria-selected="false">Upload Photo</button>
+      </div>
+
+      <!-- live video / preview -->
+      <div class="media-wrap">
+        <video id="video" autoplay playsinline muted style="display:none;"></video>
+        <img id="preview" alt="Uploaded preview" style="display:none;" />
+        <div id="placeholder" class="placeholder">No camera started — or upload a photo</div>
+      </div>
+
+      <!-- hidden canvas used for capture/encoding -->
+      <canvas id="canvas" width="320" height="240" style="display:none;"></canvas>
+    </div>
+
+    <div class="controls">
+      <label class="file-label" id="file-label">
+        <input id="file-input" type="file" accept="image/*" />
+        <span class="file-text">Choose or drop an image</span>
+      </label>
+
+      <input id="name" class="name-input" placeholder="Your name (optional)" aria-label="Your name (optional)" />
+
+      <div class="action-row">
+        <button id="startCam" class="start">Start Camera</button>
+        <button id="snap" class="primary">Analyze</button>
+        <button id="flip" class="ghost" title="Toggle camera (if available)">Flip</button>
+      </div>
+
+      <div id="result" class="result" aria-live="polite">Awaiting input...</div>
+    </div>
+
+    <div class="footer">Model: local · Confidence shown · Images stored locally (consent required)</div>
+  </main>
+
+<script>
+/* --- Elements --- */
+const video = document.getElementById('video');
+const preview = document.getElementById('preview');
+const placeholder = document.getElementById('placeholder');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const result = document.getElementById('result');
+const snapBtn = document.getElementById('snap');
+const fileInput = document.getElementById('file-input');
+const fileLabel = document.getElementById('file-label');
+const tabLive = document.getElementById('tab-live');
+const tabUpload = document.getElementById('tab-upload');
+const nameInput = document.getElementById('name');
+const flipBtn = document.getElementById('flip');
+const startBtn = document.getElementById('startCam');
+
+let stream = null;
+let usingUpload = false;
+let cameraStarted = false;
+let currentFacingMode = 'user'; // 'user' or 'environment'
+
+/* --- Helpers --- */
+function setActiveTab(upload) {
+  usingUpload = !!upload;
+  tabLive.classList.toggle('active', !usingUpload);
+  tabLive.setAttribute('aria-selected', (!usingUpload).toString());
+  tabUpload.classList.toggle('active', usingUpload);
+  tabUpload.setAttribute('aria-selected', (usingUpload).toString());
+
+  if (usingUpload) {
+    video.style.display = 'none';
+    preview.style.display = preview.src ? 'block' : 'none';
+    placeholder.style.display = preview.src ? 'none' : 'block';
+    fileLabel.style.display = 'flex';
+    startBtn.style.display = 'none';
+    flipBtn.style.display = 'none';
+  } else {
+    // Live tab: show start camera if not started, else show video & flip
+    fileLabel.style.display = 'none';
+    preview.style.display = 'none';
+    placeholder.style.display = cameraStarted ? 'none' : 'block';
+    video.style.display = cameraStarted ? 'block' : 'none';
+    startBtn.style.display = cameraStarted ? 'none' : 'inline-block';
+    flipBtn.style.display = cameraStarted ? 'inline-block' : 'none';
+  }
+}
+
+async function startCamera() {
+  if (cameraStarted) return;
+  try {
+    // try standard facingMode request
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: currentFacingMode }
+    });
+    video.srcObject = stream;
+    await video.play();
+    cameraStarted = true;
+    result.innerText = 'Camera started';
+    setActiveTab(false);
+  } catch (err) {
+    console.warn('Camera start failed:', err);
+    cameraStarted = false;
+    // friendly error message and fallback to upload
+    result.innerText = 'Camera access denied or unavailable. Use Upload Photo instead.';
+    setActiveTab(true);
+  }
+}
+
+async function stopCamera() {
+  if (stream) {
+    stream.getTracks().forEach(t => t.stop());
+    stream = null;
+  }
+  cameraStarted = false;
+  video.srcObject = null;
+}
+
+/* --- UI wiring --- */
+tabLive.addEventListener('click', () => {
+  setActiveTab(false);
+});
+tabUpload.addEventListener('click', () => setActiveTab(true));
+
+flipBtn.addEventListener('click', async () => {
+  currentFacingMode = currentFacingMode === 'user' ? 'environment' : 'user';
+  // restart only if camera already started
+  if (cameraStarted) {
+    await stopCamera();
+    await startCamera();
+  }
+});
+
+startBtn.addEventListener('click', async () => {
+  result.innerText = 'Requesting camera permission...';
+  await startCamera();
+});
+
+/* drag & drop support on label */
+;['dragenter','dragover'].forEach(evt =>
+  fileLabel.addEventListener(evt, (e) => { e.preventDefault(); fileLabel.classList.add('dragover'); })
+);
+;['dragleave','drop'].forEach(evt =>
+  fileLabel.addEventListener(evt, (e) => { e.preventDefault(); fileLabel.classList.remove('dragover'); })
+);
+fileLabel.addEventListener('drop', (e) => {
+  const f = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (f) fileInput.files = e.dataTransfer.files;
+  handleFileChange();
+});
+
+/* when the user picks a file */
+function handleFileChange() {
+  const f = fileInput.files && fileInput.files[0];
+  if (!f) return;
+  const url = URL.createObjectURL(f);
+  preview.src = url;
+  preview.onload = () => { URL.revokeObjectURL(url); };
+  setActiveTab(true);
+}
+fileInput.addEventListener('change', handleFileChange);
+
+/* capture and send to backend */
+snapBtn.addEventListener('click', async () => {
+  const name = nameInput.value.trim() || 'anonymous';
+  result.innerText = 'Analyzing...';
+  try {
+    // draw either video frame or uploaded image on canvas
+    if (usingUpload) {
+      if (!preview.src) {
+        result.innerText = 'Please upload an image first.';
+        return;
+      }
+      const img = preview;
+      const w = canvas.width, h = canvas.height;
+      const sw = img.naturalWidth || img.width, sh = img.naturalHeight || img.height;
+      const scale = Math.min(w / sw, h / sh);
+      const iw = sw * scale, ih = sh * scale;
+      const ox = (w - iw) / 2, oy = (h - ih) / 2;
+      ctx.clearRect(0,0,w,h);
+      ctx.drawImage(img, 0, 0, sw, sh, ox, oy, iw, ih);
+    } else {
+      if (!cameraStarted || !stream) {
+        result.innerText = 'Camera not started. Click "Start Camera" or use Upload Photo.';
+        return;
+      }
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    }
+
+    const dataURL = canvas.toDataURL('image/png');
+
+    const resp = await fetch('/predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: dataURL, name })
+    });
+
+    const json = await resp.json();
+    if (json.error) result.innerText = 'Error: ' + json.error;
+    else result.innerText = `${json.emotion} · ${(json.confidence*100).toFixed(1)}%`;
+  } catch (e) {
+    console.error(e);
+    result.innerText = 'Request failed: ' + (e.message || e);
+  }
+});
+
+
+(function init(){
+  setActiveTab(false);
+
+})();
+</script>
 </body>
 </html>
